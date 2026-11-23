@@ -1,112 +1,66 @@
-const os = require("os");
+const fs = require("fs");
+const path = require("path");
 
-const command = async (
-  api, event, args, startTime,
-  loadData, saveData, automicTimers,
-  config, hostingInfo, botSentMessages, BOT_ID,
-  builtInCommands, customCommandNames
-) => {
-  try {
-    const data = typeof loadData === "function" ? loadData() || {} : {};
+module.exports = {
+  config: {
+    name: "uptime",
+    aliases: ["up", "تشغيل"],
+    version: "1.0.0",
+    author: "Shadow",
+    role: 0,
+    description: "عرض وقت تشغيل البوت",
+    category: "system",
+    guide: {
+      en: "{pn}",
+      ar: "{pn}"
+    }
+  },
 
-    const elapsed = Number(startTime) > 0
-      ? Math.max(0, Date.now() - Number(startTime))
-      : process.uptime() * 1000;
+  onStart: async function ({ api, event, args }) {
+    const uptime = process.uptime();
 
-    function duration(ms) {
-      let s = Math.floor(ms / 1000);
-      const d = Math.floor(s / 86400);
-      s %= 86400;
-      const h = Math.floor(s / 3600);
-      s %= 3600;
-      const m = Math.floor(s / 60);
-      s %= 60;
-      return `${d} يوم، ${h} ساعة، ${m} دقيقة، ${s} ثانية`;
+    const days = Math.floor(uptime / 86400);
+    const hours = Math.floor((uptime % 86400) / 3600);
+    const minutes = Math.floor((uptime % 3600) / 60);
+    const seconds = Math.floor(uptime % 60);
+
+    let timeString = "";
+    if (days > 0) timeString += `${days} يوم `;
+    if (hours > 0) timeString += `${hours} ساعة `;
+    if (minutes > 0) timeString += `${minutes} دقيقة `;
+    timeString += `${seconds} ثانية`;
+    timeString = timeString.trim();
+
+    const startDate = new Date(Date.now() - uptime * 1000);
+    const startTime = startDate.toLocaleString("ar-EG", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true
+    });
+
+    // قراءة آيدي الأدمن من config.js
+    let adminID = "غير محدد";
+    try {
+      const configPath = path.join(process.cwd(), "config.js");
+      delete require.cache[require.resolve(configPath)];
+      const config = require(configPath);
+      adminID = config.ADMINBOT || config.ADMIN_BOT || config.adminBot || "غير محدد";
+      if (Array.isArray(adminID)) adminID = adminID.join(", ");
+    } catch (e) {
+      adminID = "غير محدد";
     }
 
-    function bytes(value) {
-      if (!Number.isFinite(value)) return "غير معروف";
-      const units = ["B", "KB", "MB", "GB", "TB"];
-      let n = value;
-      let i = 0;
-      while (n >= 1024 && i < units.length - 1) {
-        n /= 1024;
-        i++;
-      }
-      return `${n.toFixed(2)} ${units[i]}`;
-    }
+    const message = `𝗘𝗱𝘄𝗶𝗻
+𝗕𝗼𝘁: 𝗖𝗼𝗻𝗻𝗲𝗰𝘁𝗲𝗱 🟢
+𝗨𝗽𝘁𝗶𝗺𝗲: ${timeString}
+𝗦𝘁𝗮𝗿𝘁 𝗧𝗶𝗺𝗲: ${startTime}
+𝗔𝗱𝗺𝗶𝗻 𝗕𝗼𝘁: ${adminID}
+𝐅𝐄𝐋𝐈𝐗 「🇩🇪」`;
 
-    function count(value) {
-      if (Array.isArray(value)) return value.length;
-      if (value && typeof value === "object")
-        return Object.keys(value).length;
-      return 0;
-    }
-
-    const mem = process.memoryUsage();
-    const cpus = os.cpus();
-    const totalMem = os.totalmem();
-    const freeMem = os.freemem();
-
-    const botStart = new Date(Date.now() - elapsed)
-      .toLocaleString("ar-EG");
-
-    const load = os.loadavg().map(n => n.toFixed(2)).join(" / ");
-
-    const msg = [
-      "🌌✨━━━━━━━━━━ ⚛️ QUASAR ⚛️ ━━━━━━━━━━✨🌌",
-      "                 📊 إحصائيات وحالة النظام",
-      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-      "",
-      "╭━━━ 🟢 حالة البوت ━━━╮",
-      "│ الحالة: ONLINE",
-      `│ الاسم: ${config?.BOT_NAME || "QUASAR"}`,
-      "╰━━━━━━━━━━━━━━━━━━━━╯",
-      "",
-      "╭━━━ ⏱️ مدة التشغيل ━━━╮",
-      `│ مدة التشغيل: ${duration(elapsed)}`,
-      `│ بدأ التشغيل: ${botStart}`,
-      `│ مدة عملية Node: ${duration(process.uptime() * 1000)}`,
-      "╰━━━━━━━━━━━━━━━━━━━━━━╯",
-      "",
-      "╭━━━ 💻 معلومات النظام ━━━╮",
-      `│ النظام: ${os.type()} ${os.release()}`,
-      `│ المعمارية: ${os.arch()}`,
-      `│ Node.js: ${process.version}`,
-      `│ المعالج: ${cpus[0]?.model || "غير معروف"}`,
-      `│ عدد الأنوية: ${cpus.length}`,
-      `│ حمل النظام: ${load}`,
-      "╰━━━━━━━━━━━━━━━━━━━━━━━━╯",
-      "",
-      "╭━━━ 🧠 الذاكرة ━━━╮",
-      `│ الرام المستخدمة: ${bytes(totalMem - freeMem)}`,
-      `│ الرام المتاحة: ${bytes(freeMem)}`,
-      `│ الرام الإجمالية: ${bytes(totalMem)}`,
-      `│ ذاكرة البوت RSS: ${bytes(mem.rss)}`,
-      `│ Heap Used: ${bytes(mem.heapUsed)}`,
-      `│ Heap Total: ${bytes(mem.heapTotal)}`,
-      "╰━━━━━━━━━━━━━━━━━━╯",
-      "",
-      "╭━━━ 📈 إحصائيات البوت ━━━╮",
-      `│ المجموعات المحفوظة: ${count(data.savedGroupNames)}`,
-      `│ الأوامر الأساسية: ${count(builtInCommands)}`,
-      `│ الأوامر المخصصة: ${count(customCommandNames)}`,
-      `│ أنظمة القفل: ${count(data.locked)}`,
-      `│ أنظمة الحماية: ${count(data.protected)}`,
-      `│ المؤقتات النشطة: ${count(automicTimers)}`,
-      "╰━━━━━━━━━━━━━━━━━━━━━━━━╯",
-      "",
-      "🌠 QUASAR",
-      "             Powered by ⚛️"
-    ].join("\n");
-
-    return api.sendMessage(msg, event.threadID);
-  } catch (err) {
-    console.log("SHADOW UPTIME ERROR:", err.stack || err);
-    return api.sendMessage("تعذر عرض معلومات حالة البوت.", event.threadID);
+    return api.sendMessage(message, event.threadID, event.messageID);
   }
 };
-
-
-command.aliases = ["ابتايم"];
-module.exports = command;
