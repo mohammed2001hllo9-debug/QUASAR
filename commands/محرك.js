@@ -1,197 +1,170 @@
-"use strict";
+const fs = require("fs");
+const path = require("path");
 
-// One engine may run per group. Its reservation is shared with بيس.
-const ENGINE_INTERVALS = Object.freeze({
-  1: 60_000,
-  2: 90_000,
-  3: 120_000
-});
-const STATE_PREFIX = "__shadow_engines__:";
-const { acquireRepeatLock, releaseRepeatLock } = require("../SHADOW/repeat-coordinator");
+const DATA_FILE = path.join(__dirname, "engine_data.json");
 
-function stateKey(threadID) {
-  return STATE_PREFIX + String(threadID);
-}
-
-function sendOnce(api, message, threadID) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let timeout = null;
-    const finish = (error, info) => {
-      if (settled) return;
-      settled = true;
-      if (timeout) clearTimeout(timeout);
-      if (error) reject(error);
-      else resolve(info);
-    };
-    timeout = setTimeout(() => finish(new Error("انتهت مهلة الإرسال بعد 30 ثانية")), 30000);
-    try {
-      const result = api.sendMessage(message, threadID, finish);
-      if (result && typeof result.then === "function") result.then(info => finish(null, info), finish);
-      else if (api.sendMessage.length < 3) finish(null, result);
-    } catch (error) {
-      finish(error);
-    }
-  });
-}
-
-function clearEngineTimer(engine) {
-  if (engine?.timer) clearTimeout(engine.timer);
-  if (engine) engine.timer = null;
-}
-
-function stopEngines(automicTimers, threadID, engineID = null) {
-  const key = stateKey(threadID);
-  const state = automicTimers[key];
-  if (!state) return 0;
-
-  if (engineID !== null) {
-    const id = String(engineID);
-    const engine = state.engines[id];
-    if (!engine) return 0;
-    engine.stopped = true;
-    clearEngineTimer(engine);
-    delete state.engines[id];
-  } else {
-    for (const engine of Object.values(state.engines || {})) {
-      engine.stopped = true;
-      clearEngineTimer(engine);
-    }
-    state.engines = {};
-  }
-
-  if (!Object.keys(state.engines || {}).length) {
-    state.stopped = true;
-    releaseRepeatLock(state.threadID, state.lock);
-    delete automicTimers[key];
-  }
-  return 1;
-}
-
-function scheduleEngine(state, engine) {
-  if (state.stopped || engine.stopped || state.engines[engine.id] !== engine || engine.sending) return;
-  clearEngineTimer(engine);
-  engine.timer = setTimeout(async () => {
-    engine.timer = null;
-    if (state.stopped || engine.stopped || state.engines[engine.id] !== engine) return;
-    engine.sending = true;
-    try {
-      await sendOnce(state.api, engine.text, state.threadID);
-      engine.lastSentAt = Date.now();
-      console.log(`SHADOW ENGINE ${engine.id} SENT:`, state.threadID);
-    } catch (error) {
-      console.error(`SHADOW ENGINE ${engine.id} SEND ERROR:`, error?.message || error);
-    } finally {
-      engine.sending = false;
-      scheduleEngine(state, engine);
-    }
-  }, engine.intervalMs);
-  if (typeof engine.timer.unref === "function") engine.timer.unref();
-}
-
-async function startEngine(api, threadID, automicTimers, engineID, text) {
-  const id = String(engineID);
-  const intervalMs = ENGINE_INTERVALS[id];
-  const cleanText = String(text ?? "");
-  if (!intervalMs) throw new Error("رقم المحرك غير صحيح");
-  if (!cleanText.trim()) throw new Error("أرسل نص الرسالة");
-
-  const key = stateKey(threadID);
-  if (automicTimers[key]) stopEngines(automicTimers, threadID);
-
-  const reservation = acquireRepeatLock(threadID, "محرك " + id);
-  if (!reservation.acquired) {
-    const error = new Error("يوجد نظام تكرار آخر يعمل في هذه المجموعة. أوقفه أولاً قبل تشغيل محرك.");
-    error.code = "REPEAT_BUSY";
-    throw error;
-  }
-
-  const state = {
-    kind: "shadow-engines",
-    key,
-    threadID: String(threadID),
-    api,
-    lock: reservation.lock,
-    engines: {},
-    stopped: false
-  };
-  automicTimers[key] = state;
-
-  const engine = {
-    id,
-    text: cleanText,
-    intervalMs,
-    timer: null,
-    sending: true,
-    stopped: false,
-    lastSentAt: 0
-  };
-  state.engines[id] = engine;
-
+function loadData() {
   try {
-    // أرسل النص الأصلي فقط دون معلومات تفعيل إضافية.
-    await sendOnce(api, cleanText, String(threadID));
-    engine.lastSentAt = Date.now();
-    console.log(`SHADOW ENGINE ${id} FIRST SEND:`, threadID);
-  } catch (error) {
-    engine.stopped = true;
-    clearEngineTimer(engine);
-    state.stopped = true;
-    releaseRepeatLock(state.threadID, state.lock);
-    if (automicTimers[key] === state) delete automicTimers[key];
-    throw error;
-  } finally {
-    engine.sending = false;
-  }
-
-  scheduleEngine(state, engine);
-  return { engineID: id, intervalMs };
+    if (fs.existsSync(DATA_FILE)) return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+  } catch (e) {}
+  return {};
 }
 
-module.exports = async (api, event, args, startTime, loadData, saveData, automicTimers) => {
-  const threadID = String(event.threadID || "");
-  if (!threadID) return;
-
-  const selector = String(args[1] || "").trim().toLowerCase();
-  if (["ايقاف", "إيقاف", "off", "stop", "وقف"].includes(selector)) {
-    const stopped = stopEngines(automicTimers, threadID);
-    return api.sendMessage(
-      stopped ? "🛑 تم إيقاف محرك هذه المجموعة." : "ℹ️ محرك غير نشط في هذه المجموعة.",
-      threadID
-    );
-  }
-
-  const engineID = Number(selector);
-  if (![1, 2, 3].includes(engineID)) {
-    return api.sendMessage(
-      "⚙️ طريقة الاستخدام:\n" +
-      "محرك 1 [النص] — كل 60 ثانية.\n" +
-      "محرك 2 [النص] — كل 90 ثانية.\n" +
-      "محرك 3 [النص] — كل 120 ثانية.\n" +
-      "محرك إيقاف — إيقاف المحرك في هذه المجموعة.",
-      threadID
-    );
-  }
-
-  const rawText = typeof args.rawText === "string" ? args.rawText : args.slice(1).join(" ");
-  const parsed = rawText.match(/^\s*([123])(?:[ \t\r\n]+([\s\S]*))?$/);
-  const text = parsed && Number(parsed[1]) === engineID ? (parsed[2] || "") : "";
-  if (!text.trim()) {
-    return api.sendMessage("⚠️ أرسل نص الرسالة بعد رقم المحرك.", threadID);
-  }
-
+function saveData(data) {
   try {
-    await startEngine(api, threadID, automicTimers, engineID, text);
-  } catch (error) {
-    console.error("SHADOW ENGINE START ERROR:", error?.message || error);
+    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), "utf8");
+  } catch (e) {}
+}
+
+// المؤقتات النشطة: threadID -> interval
+const timers = {};
+
+function startTimer(api, threadID, text, seconds) {
+  stopTimer(threadID);
+  timers[threadID] = setInterval(() => {
+    api.sendMessage(text, threadID).catch(() => {});
+  }, seconds * 1000);
+}
+
+function stopTimer(threadID) {
+  if (timers[threadID]) {
+    clearInterval(timers[threadID]);
+    delete timers[threadID];
+  }
+}
+
+// تحويل الوقت: 300s / 5m / 2h / 30 (ثوانٍ افتراضياً)
+function parseTime(str) {
+  str = str.toLowerCase().trim();
+  const match = str.match(/^(\d+)\s*(s|m|h|ث|د|س)?$/);
+  if (!match) return null;
+  const num = parseInt(match[1], 10);
+  const unit = match[2] || "s";
+  if (unit === "s" || unit === "ث") return num;
+  if (unit === "m" || unit === "د") return num * 60;
+  if (unit === "h" || unit === "س") return num * 3600;
+  return num;
+}
+
+module.exports = {
+  config: {
+    name: "محرك",
+    aliases: ["engine"],
+    version: "1.0.0",
+    author: "Shadow",
+    role: 0,
+    description: "حفظ رسالة وتكرارها تلقائياً بفاصل زمني",
+    category: "system",
+    guide: {
+      en: "محرك رسالة (نص) | محرك تشغيل | محرك ايقاف | محرك وقت 300s",
+      ar: "محرك رسالة (نص) | محرك تشغيل | محرك ايقاف | محرك وقت 300s"
+    }
+  },
+
+  onChat: async function ({ api, event }) {
+    const body = (event.body || "").trim();
+    if (!/^محرك(\s|$)/.test(body) && !/^engine(\s|$)/i.test(body)) return;
+
+    const rest = body.replace(/^(محرك|engine)\s*/i, "").trim();
+    const threadID = event.threadID;
+    const data = loadData();
+
+    // التأكد من وجود سجل للمجموعة
+    if (!data[threadID]) data[threadID] = { text: "", seconds: 0 };
+
+    // ============ محرك رسالة (نص) ============
+    if (/^رسالة\s+/.test(rest)) {
+      const text = rest.replace(/^رسالة\s+/, "").trim();
+      if (!text) {
+        return api.sendMessage("⚠️ اكتب النص بعد كلمة رسالة.\nمثال: محرك رسالة مرحبا بالجميع", threadID, event.messageID);
+      }
+      data[threadID].text = text;
+      saveData(data);
+      return api.sendMessage(`💾 تم حفظ الرسالة:\n"${text}"`, threadID, event.messageID);
+    }
+
+    // ============ محرك وقت (مدة) ============
+    if (/^وقت\s+/.test(rest)) {
+      const timeStr = rest.replace(/^وقت\s+/, "").trim();
+      const seconds = parseTime(timeStr);
+      if (!seconds || seconds <= 0) {
+        return api.sendMessage(
+          "⚠️ صيغة غير صحيحة.\nأمثلة: محرك وقت 300s | محرك وقت 5m | محرك وقت 2h",
+          threadID,
+          event.messageID
+        );
+      }
+      data[threadID].seconds = seconds;
+      saveData(data);
+
+      // إذا كان التكرار شغّالاً، أعد تشغيله بالمدة الجديدة
+      if (timers[threadID] && data[threadID].text) {
+        startTimer(api, threadID, data[threadID].text, seconds);
+      }
+
+      return api.sendMessage(`⏱️ تم ضبط الوقت: كل ${seconds} ثانية`, threadID, event.messageID);
+    }
+
+    // ============ محرك تشغيل ============
+    if (rest === "تشغيل" || rest.toLowerCase() === "start") {
+      if (!data[threadID].text) {
+        return api.sendMessage("⚠️ لا توجد رسالة محفوظة. احفظها أولاً:\nمحرك رسالة (نص)", threadID, event.messageID);
+      }
+      if (!data[threadID].seconds || data[threadID].seconds <= 0) {
+        return api.sendMessage("⚠️ لم تحدد الوقت. استخدم:\nمحرك وقت 300s", threadID, event.messageID);
+      }
+      startTimer(api, threadID, data[threadID].text, data[threadID].seconds);
+      return api.sendMessage(
+        `✅ تم التشغيل:\n📝 "${data[threadID].text}"\n⏱️ كل ${data[threadID].seconds} ثانية`,
+        threadID,
+        event.messageID
+      );
+    }
+
+    // ============ محرك ايقاف ============
+    if (rest === "ايقاف" || rest === "إيقاف" || rest.toLowerCase() === "stop") {
+      stopTimer(threadID);
+      return api.sendMessage("🛑 تم إيقاف التكرار (الرسالة والوقت محفوظان).", threadID, event.messageID);
+    }
+
+    // ============ محرك حذف ============
+    if (rest === "حذف") {
+      stopTimer(threadID);
+      delete data[threadID];
+      saveData(data);
+      return api.sendMessage("🗑️ تم حذف الرسالة والإعدادات بالكامل.", threadID, event.messageID);
+    }
+
+    // ============ محرك حالة ============
+    if (rest === "حالة" || rest === "status") {
+      const d = data[threadID];
+      const running = timers[threadID] ? "🟢 يعمل" : "🔴 متوقف";
+      return api.sendMessage(
+        `📊 الحالة: ${running}\n📝 النص: ${d.text || "لا يوجد"}\n⏱️ الوقت: ${d.seconds || 0} ثانية`,
+        threadID,
+        event.messageID
+      );
+    }
+
+    // ============ مساعدة ============
     return api.sendMessage(
-      `❌ ${String(error?.message || error).slice(0, 300)}`,
-      threadID
+      "📌 أوامر المحرك:\n" +
+      "• محرك رسالة (نص) — حفظ النص\n" +
+      "• محرك وقت 300s — تحديد الفاصل الزمني\n" +
+      "• محرك تشغيل — بدء الإرسال\n" +
+      "• محرك ايقاف — إيقاف الإرسال\n" +
+      "• محرك حالة — عرض الحالة\n" +
+      "• محرك حذف — حذف كل شيء",
+      threadID,
+      event.messageID
     );
+  },
+
+  onLoad: async function ({ api }) {
+    const data = loadData();
+    for (const threadID in data) {
+      const { text, seconds } = data[threadID];
+      if (text && seconds > 0) startTimer(api, threadID, text, seconds);
+    }
   }
 };
-
-module.exports.startEngine = startEngine;
-module.exports.stopEngines = stopEngines;
-module.exports.ENGINE_INTERVALS = ENGINE_INTERVALS;
-module.exports.stateKey = stateKey;
