@@ -3,20 +3,17 @@ const os = require("os");
 module.exports = {
   config: {
     name: "server",
-    aliases: ["سيرفر", "نظام"],
     version: "1.0.0",
-    author: "Shadow",
-    role: 0,
-    description: "عرض معلومات النظام (التشغيل، الرام، المعالج)",
-    category: "system",
-    guide: {
-      en: "{pn}",
-      ar: "{pn}"
-    }
+    hasPermssion: 0,
+    credits: "Shadow",
+    description: "عرض معلومات النظام",
+    commandCategory: "system",
+    usages: "",
+    cooldowns: 5,
+    aliases: ["سيرفر", "نظام"]
   },
 
-  onStart: async function ({ api, event }) {
-    // 1. مدة تشغيل النظام (System Uptime)
+  run: async function ({ api, event }) {
     const uptimeSeconds = os.uptime();
     const days = Math.floor(uptimeSeconds / 86400);
     const hours = Math.floor((uptimeSeconds % 86400) / 3600);
@@ -27,24 +24,18 @@ module.exports = {
     if (hours > 0) uptimeStr += `${hours} ساعة `;
     uptimeStr += `${minutes} دقيقة`;
 
-    // 2. معلومات الرام (Memory)
     const totalMem = os.totalmem();
     const freeMem = os.freemem();
     const usedMem = totalMem - freeMem;
-    
     const formatBytes = (bytes) => (bytes / (1024 ** 3)).toFixed(2) + " GB";
-    
     const memStr = `المستخدم: ${formatBytes(usedMem)} / الإجمالي: ${formatBytes(totalMem)}`;
 
-    // 3. معلومات المعالج (CPU)
     const cpus = os.cpus();
     const cpuModel = cpus[0].model;
     const cpuCores = cpus.length;
-    const cpuSpeed = cpus[0].speed; // MHz
-
+    const cpuSpeed = cpus[0].speed;
     const cpuStr = `${cpuModel} (${cpuCores} نواة @ ${cpuSpeed} MHz)`;
 
-    // 4. بناء الرسالة النهائية
     const message = `🖥️ **معلومات النظام** 🖥️
 ━━━━━━━━━━━━━━━
 ⏱️ **التشغيل:** ${uptimeStr}
